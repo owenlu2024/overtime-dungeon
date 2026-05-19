@@ -272,10 +272,18 @@
   }
 
   async function deleteRecord(recordId) {
-    await api("deleteRecord", { token: sessionToken(), recordId });
+    const previous = state.records;
     state.records = state.records.filter((item) => item.id !== recordId);
-    await refreshLeaderboard("all");
+    updateCurrentUserTotals();
     cacheLocal();
+    try {
+      await api("deleteRecord", { token: sessionToken(), recordId });
+    } catch (error) {
+      state.records = previous;
+      updateCurrentUserTotals();
+      cacheLocal();
+      throw error;
+    }
   }
 
   async function deleteUser(userId) {
