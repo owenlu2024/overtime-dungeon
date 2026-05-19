@@ -143,6 +143,10 @@ function fieldBool(value) {
   return Boolean(value);
 }
 
+function normalizeUsername(value) {
+  return String(value || "").trim();
+}
+
 function parseDate(value) {
   if (typeof value === "number") {
     const date = new Date(value + 8 * 60 * 60 * 1000);
@@ -360,7 +364,7 @@ async function handle(action, body) {
   }
 
   if (action === "login") {
-    const username = String(body.username || "").trim();
+    const username = normalizeUsername(body.username);
     const password = String(body.password || "");
     const users = await allUsers();
     const user = users.find((item) => item.username === username && item.password === password && item.active);
@@ -375,12 +379,12 @@ async function handle(action, body) {
 
   if (action === "register") {
     const user = body.user || {};
-    const username = String(user.username || "").trim();
+    const username = normalizeUsername(user.username);
     const password = String(user.password || "");
     const roleName = String(user.role || "勇者").trim() || "勇者";
     const roleKey = String(user.roleKey || "hero").trim() || "hero";
     if (!username || !password) throw new Error("请输入用户名和密码");
-    const existing = (await allUsers()).find((item) => item.username === username);
+    const existing = (await allUsers()).find((item) => normalizeUsername(item.username) === username);
     if (existing) throw new Error("用户名已存在");
     const created = await createRecordWithOptionalFields(env("FEISHU_USERS_TABLE_ID"), {
       username,
