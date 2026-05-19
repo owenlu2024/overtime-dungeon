@@ -5,7 +5,8 @@
     records: "oq_v7_records",
     view: "oq_v7_view",
     rankMode: "oq_v7_rank_mode",
-    session: "oq_session_token"
+    session: "oq_session_token",
+    roleMeta: "oq_v7_role_meta"
   };
 
   const state = {
@@ -49,6 +50,27 @@
 
   function setSessionToken(token) {
     writeText(K.session, token || "");
+  }
+
+  function roleMeta() {
+    return read(K.roleMeta, {});
+  }
+
+  function rememberRole(user) {
+    if (!user?.username || !user.roleKey) return;
+    write(K.roleMeta, {
+      ...roleMeta(),
+      [user.username]: { role: user.role, roleKey: user.roleKey }
+    });
+  }
+
+  function applyRoleMeta(user) {
+    const meta = user?.username ? roleMeta()[user.username] : null;
+    return meta ? { ...user, role: meta.role || user.role, roleKey: meta.roleKey || user.roleKey } : user;
+  }
+
+  function applyRoleMetaList(users) {
+    return (users || []).map(applyRoleMeta);
   }
 
   function configured() {
@@ -124,7 +146,7 @@
 
   async function refreshLeaderboard(mode = "all") {
     const rows = await api("leaderboard", { token: sessionToken(), mode });
-    state.users = rows || [];
+    state.users = applyRoleMetaList(rows || []);
     if (state.currentUser && !state.users.some((user) => user.id === state.currentUser.id)) {
       state.users = [state.currentUser, ...state.users];
     }
@@ -143,9 +165,9 @@
     }
 
     const data = await api("bootstrap", { token });
-    state.currentUser = data.user || null;
+    state.currentUser = applyRoleMeta(data.user || null);
     state.records = data.records || [];
-    state.users = data.users || [];
+    state.users = applyRoleMetaList(data.users || []);
     cacheLocal();
   }
 
@@ -168,9 +190,9 @@
     const result = await api("login", { username, password });
     if (!result?.sessionToken || !result?.user) throw new Error("账号或密码错误");
     setSessionToken(result.sessionToken);
-    state.currentUser = result.user;
+    state.currentUser = applyRoleMeta(result.user);
     state.records = result.records || [];
-    state.users = result.users || [result.user];
+    state.users = applyRoleMetaList(result.users || [state.currentUser]);
     writeText(K.current, state.currentUser.id);
     cacheLocal();
     return state.currentUser;
@@ -180,9 +202,10 @@
     const result = await api("register", { user });
     if (!result?.sessionToken || !result?.user) throw new Error("注册失败");
     setSessionToken(result.sessionToken);
-    state.currentUser = result.user;
+    rememberRole(result.user);
+    state.currentUser = applyRoleMeta(result.user);
     state.records = [];
-    state.users = [result.user, ...state.users.filter((item) => item.id !== result.user.id)];
+    state.users = [state.currentUser, ...state.users.filter((item) => item.id !== result.user.id)];
     writeText(K.current, state.currentUser.id);
     cacheLocal();
     return state.currentUser;
@@ -305,6 +328,7 @@
     sessionToken,
     configured,
     init,
+    syncRemote: loadRemote,
     login,
     register,
     leaderboardRows,

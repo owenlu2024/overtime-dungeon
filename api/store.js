@@ -2,6 +2,7 @@ const crypto = require("crypto");
 
 let cachedTenantToken = "";
 let cachedTenantTokenExpiresAt = 0;
+let canSaveRoleFields = true;
 
 const FEISHU_HOST = "https://open.feishu.cn";
 
@@ -86,7 +87,7 @@ async function createRecord(tableId, fields) {
 }
 
 async function createRecordWithOptionalFields(tableId, fields, optionalFieldNames) {
-  if (process.env.FEISHU_SAVE_ROLE_FIELDS !== "1") {
+  if (!canSaveRoleFields) {
     const requiredFields = { ...fields };
     optionalFieldNames.forEach((name) => delete requiredFields[name]);
     return createRecord(tableId, requiredFields);
@@ -94,6 +95,7 @@ async function createRecordWithOptionalFields(tableId, fields, optionalFieldName
   try {
     return await createRecord(tableId, fields);
   } catch (error) {
+    canSaveRoleFields = false;
     const requiredFields = { ...fields };
     optionalFieldNames.forEach((name) => delete requiredFields[name]);
     return createRecord(tableId, requiredFields);
@@ -109,7 +111,7 @@ async function updateRecord(tableId, recordId, fields) {
 }
 
 async function updateRecordWithOptionalFields(tableId, recordId, fields, optionalFieldNames) {
-  if (process.env.FEISHU_SAVE_ROLE_FIELDS !== "1") {
+  if (!canSaveRoleFields) {
     const requiredFields = { ...fields };
     optionalFieldNames.forEach((name) => delete requiredFields[name]);
     return updateRecord(tableId, recordId, requiredFields);
@@ -117,6 +119,7 @@ async function updateRecordWithOptionalFields(tableId, recordId, fields, optiona
   try {
     return await updateRecord(tableId, recordId, fields);
   } catch (error) {
+    canSaveRoleFields = false;
     const requiredFields = { ...fields };
     optionalFieldNames.forEach((name) => delete requiredFields[name]);
     return updateRecord(tableId, recordId, requiredFields);
@@ -359,14 +362,14 @@ async function handle(action, body) {
   if (action === "login") {
     const username = String(body.username || "").trim();
     const password = String(body.password || "");
-    const { users, records } = await allData();
+    const users = await allUsers();
     const user = users.find((item) => item.username === username && item.password === password && item.active);
     if (!user) throw new Error("账号或密码错误");
     return {
       sessionToken: signSession(user.username),
       user,
       users,
-      records: user.isAdmin ? records : records.filter((record) => record.userId === user.id)
+      records: []
     };
   }
 
@@ -392,12 +395,18 @@ async function handle(action, body) {
   }
 
   if (action === "bootstrap") {
-    const { user, users, records } = await requireUser(body.token);
-    return {
-      user,
-      users,
-      records: user.isAdmin ? records : records.filter((record) => record.userId === user.id)
-    };
+    const user = await requireUserOnly(body.token);
+    try {
+      const data = await allData();
+      const freshUser = data.users.find((item) => item.username === user.username) || user;
+      return {
+        user: freshUser,
+        users: data.users,
+        records: freshUser.isAdmin ? data.records : data.records.filter((record) => record.userId === freshUser.id)
+      };
+    } catch (error) {
+      return { user, users: [user], records: [], partial: true, message: error.message || "飞书记录同步失败" };
+    }
   }
 
   if (action === "leaderboard") {
