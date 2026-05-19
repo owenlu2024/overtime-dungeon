@@ -5,12 +5,9 @@
     records: "oq_v7_records",
     view: "oq_v7_view",
     rankMode: "oq_v7_rank_mode",
-    token: "oq_supabase_anon_key",
-    url: "oq_supabase_url",
     session: "oq_session_token"
   };
 
-  const config = window.SUPABASE_CONFIG || {};
   const state = {
     users: [],
     records: [],
@@ -18,6 +15,7 @@
     loaded: false,
     lastError: ""
   };
+  const apiBase = window.FEISHU_CONFIG?.apiBase || "/api/store";
 
   function read(key, fallback) {
     try {
@@ -45,14 +43,6 @@
     localStorage.removeItem(key);
   }
 
-  function configuredUrl() {
-    return String(config.url || readText(K.url)).trim().replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
-  }
-
-  function supabaseAnonKey() {
-    return String(config.anonKey || readText(K.token)).trim();
-  }
-
   function sessionToken() {
     return readText(K.session).trim();
   }
@@ -61,103 +51,23 @@
     writeText(K.session, token || "");
   }
 
-  function setSupabaseUrl(url) {
-    writeText(K.url, String(url || "").trim().replace(/\/+$/, "").replace(/\/rest\/v1$/, ""));
-  }
-
-  function setSupabaseAnonKey(key) {
-    writeText(K.token, String(key || "").trim());
-  }
-
   function configured() {
-    return Boolean(configuredUrl() && supabaseAnonKey());
+    return true;
   }
 
-  function headers(extra = {}) {
-    const key = supabaseAnonKey();
-    return {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      ...extra
-    };
-  }
-
-  async function api(path, options = {}) {
-    if (!configured()) throw new Error("请先填写 Supabase URL 和 anon key");
-    const res = await fetch(`${configuredUrl()}/rest/v1/${path}`, {
-      ...options,
-      headers: headers(options.headers || {})
+  async function api(action, payload = {}) {
+    const res = await fetch(apiBase, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...payload })
     });
-    const text = await res.text();
-    const body = text ? JSON.parse(text) : null;
-    if (!res.ok) {
-      const message = body?.message || body?.hint || `Supabase 请求失败：${res.status}`;
-      const err = new Error(message);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.ok === false) {
+      const err = new Error(body?.message || `飞书同步失败：${res.status}`);
       err.status = res.status;
       throw err;
     }
-    return body;
-  }
-
-  async function rpc(name, payload = {}) {
-    return api(`rpc/${name}`, {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-  }
-
-  function fromUser(row) {
-    if (!row) return null;
-    return {
-      id: row.id,
-      username: row.username,
-      password: row.password || "",
-      role: row.role || "",
-      roleKey: row.role_key || row.roleKey || "hero",
-      isAdmin: Boolean(row.is_admin ?? row.isAdmin),
-      createdAt: row.created_at || row.createdAt,
-      expOverride: row.exp_override == null ? null : Number(row.exp_override),
-      totalHours: Number(row.total_hours || row.totalHours || 0),
-      todayHours: Number(row.today_hours || row.todayHours || 0),
-      weekHours: Number(row.week_hours || row.weekHours || 0),
-      monthHours: Number(row.month_hours || row.monthHours || 0),
-      yearHours: Number(row.year_hours || row.yearHours || 0),
-      totalExp: Number(row.total_exp || row.totalExp || 0),
-      level: Number(row.level || 0),
-      title: row.title || ""
-    };
-  }
-
-  function fromRecord(row) {
-    if (!row) return null;
-    return {
-      id: row.id,
-      userId: row.user_id || row.userId,
-      date: row.date,
-      startTime: row.start_time || row.startTime,
-      endTime: row.end_time || row.endTime,
-      duration: Number(row.duration || 0),
-      type: row.type || "",
-      remark: row.remark || "",
-      createdAt: row.created_at || row.createdAt,
-      updatedAt: row.updated_at || row.updatedAt
-    };
-  }
-
-  function toRecord(record) {
-    return {
-      id: record.id,
-      user_id: record.userId,
-      date: record.date,
-      start_time: record.startTime,
-      end_time: record.endTime,
-      duration: Number(record.duration || 0),
-      type: record.type || "",
-      remark: record.remark || "",
-      created_at: record.createdAt || new Date().toISOString(),
-      updated_at: record.updatedAt || new Date().toISOString()
-    };
+    return body.data;
   }
 
   function cacheLocal() {
@@ -167,8 +77,8 @@
   }
 
   async function refreshLeaderboard(mode = "all") {
-    const rows = await rpc("app_leaderboard", { p_token: sessionToken(), p_mode: mode });
-    state.users = (rows || []).map(fromUser);
+    const rows = await api("leaderboard", { token: sessionToken(), mode });
+    state.users = rows || [];
     if (state.currentUser && !state.users.some((user) => user.id === state.currentUser.id)) {
       state.users = [state.currentUser, ...state.users];
     }
@@ -185,13 +95,11 @@
       cacheLocal();
       return;
     }
-    const [user, records] = await Promise.all([
-      rpc("app_current_user", { p_token: token }),
-      rpc("app_my_records", { p_token: token })
-    ]);
-    state.currentUser = fromUser(Array.isArray(user) ? user[0] : user);
-    state.records = (records || []).map(fromRecord);
-    await refreshLeaderboard("all");
+
+    const data = await api("bootstrap", { token });
+    state.currentUser = data.user || null;
+    state.records = data.records || [];
+    state.users = data.users || [];
     cacheLocal();
   }
 
@@ -201,43 +109,31 @@
     state.currentUser = state.users.find((user) => user.id === readText(K.current)) || null;
     state.lastError = "";
 
-    if (!configured()) {
-      state.loaded = true;
-      state.lastError = "请先填写 Supabase URL 和 anon key，才能跨浏览器同步";
-      return;
-    }
-
     try {
-      await rpc("app_ensure_admin", {});
+      await api("ensureAdmin", {});
       await loadRemote();
       state.loaded = true;
     } catch (error) {
-      state.lastError = error.message || "Supabase 数据同步失败";
+      state.lastError = error.message || "飞书数据同步失败";
       state.loaded = true;
     }
   }
 
   async function login(username, password) {
-    const result = await rpc("app_login", { p_username: username, p_password: password });
-    if (!result?.session_token || !result?.user) throw new Error("账号或密码错误");
-    setSessionToken(result.session_token);
-    state.currentUser = fromUser(result.user);
+    const result = await api("login", { username, password });
+    if (!result?.sessionToken || !result?.user) throw new Error("账号或密码错误");
+    setSessionToken(result.sessionToken);
+    state.currentUser = result.user;
     writeText(K.current, state.currentUser.id);
     await loadRemote();
     return state.currentUser;
   }
 
   async function register(user) {
-    const result = await rpc("app_register", {
-      p_id: user.id,
-      p_username: user.username,
-      p_password: user.password,
-      p_role: user.role || "",
-      p_role_key: user.roleKey || "hero"
-    });
-    if (!result?.session_token || !result?.user) throw new Error("注册失败");
-    setSessionToken(result.session_token);
-    state.currentUser = fromUser(result.user);
+    const result = await api("register", { user });
+    if (!result?.sessionToken || !result?.user) throw new Error("注册失败");
+    setSessionToken(result.sessionToken);
+    state.currentUser = result.user;
     writeText(K.current, state.currentUser.id);
     await loadRemote();
     return state.currentUser;
@@ -248,8 +144,8 @@
   }
 
   async function saveUser(user) {
-    const saved = await rpc("app_save_user", { p_token: sessionToken(), p_user: user });
-    state.currentUser = state.currentUser?.id === saved.id ? fromUser(saved) : state.currentUser;
+    const saved = await api("saveUser", { token: sessionToken(), user });
+    state.currentUser = state.currentUser?.id === saved.id ? saved : state.currentUser;
     await loadRemote();
   }
 
@@ -280,9 +176,8 @@
   }
 
   async function saveRecord(record) {
-    const saved = await rpc("app_save_record", { p_token: sessionToken(), p_record: toRecord(record) });
-    const next = fromRecord(saved);
-    state.records = [...state.records.filter((item) => item.id !== next.id), next];
+    const saved = await api("saveRecord", { token: sessionToken(), record });
+    state.records = [...state.records.filter((item) => item.id !== record.id && item.id !== saved.id), saved];
     await refreshLeaderboard("all");
     cacheLocal();
   }
@@ -293,29 +188,28 @@
   }
 
   async function deleteRecord(recordId) {
-    await rpc("app_delete_record", { p_token: sessionToken(), p_record_id: recordId });
+    await api("deleteRecord", { token: sessionToken(), recordId });
     state.records = state.records.filter((item) => item.id !== recordId);
     await refreshLeaderboard("all");
     cacheLocal();
   }
 
   async function deleteUser(userId) {
-    await rpc("app_delete_user", { p_token: sessionToken(), p_user_id: userId });
+    await api("deleteUser", { token: sessionToken(), userId });
     state.users = state.users.filter((item) => item.id !== userId);
     state.records = state.records.filter((record) => record.userId !== userId);
     cacheLocal();
   }
 
   async function clearRecordsForUser(userId) {
-    await rpc("app_clear_records", { p_token: sessionToken(), p_user_id: userId });
+    await api("clearRecords", { token: sessionToken(), userId });
     if (state.currentUser?.id === userId) state.records = [];
     await refreshLeaderboard("all");
     cacheLocal();
   }
 
   async function leaderboardRows(mode) {
-    const rows = await rpc("app_leaderboard", { p_token: sessionToken(), p_mode: mode });
-    return (rows || []).map(fromUser);
+    return api("leaderboard", { token: sessionToken(), mode });
   }
 
   function recordsForCurrentUser() {
@@ -346,10 +240,6 @@
     readText,
     writeText,
     remove,
-    supabaseUrl: configuredUrl,
-    setSupabaseUrl,
-    supabaseAnonKey,
-    setSupabaseAnonKey,
     sessionToken,
     configured,
     init,
