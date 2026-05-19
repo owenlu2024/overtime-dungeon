@@ -6,15 +6,15 @@
     view: "oq_v7_view",
     rankMode: "oq_v7_rank_mode",
     token: "oq_supabase_anon_key",
-    url: "oq_supabase_url"
+    url: "oq_supabase_url",
+    session: "oq_session_token"
   };
 
-  const tableUsers = "overtime_users";
-  const tableRecords = "overtime_records";
   const config = window.SUPABASE_CONFIG || {};
   const state = {
     users: [],
     records: [],
+    currentUser: null,
     loaded: false,
     lastError: ""
   };
@@ -46,15 +46,23 @@
   }
 
   function configuredUrl() {
-    return String(config.url || readText(K.url)).trim().replace(/\/+$/, "");
+    return String(config.url || readText(K.url)).trim().replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
   }
 
   function supabaseAnonKey() {
     return String(config.anonKey || readText(K.token)).trim();
   }
 
+  function sessionToken() {
+    return readText(K.session).trim();
+  }
+
+  function setSessionToken(token) {
+    writeText(K.session, token || "");
+  }
+
   function setSupabaseUrl(url) {
-    writeText(K.url, String(url || "").trim().replace(/\/+$/, ""));
+    writeText(K.url, String(url || "").trim().replace(/\/+$/, "").replace(/\/rest\/v1$/, ""));
   }
 
   function setSupabaseAnonKey(key) {
@@ -71,15 +79,12 @@
       apikey: key,
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      Prefer: "return=representation",
       ...extra
     };
   }
 
   async function api(path, options = {}) {
-    if (!configured()) {
-      throw new Error("请先填写 Supabase URL 和 anon key");
-    }
+    if (!configured()) throw new Error("请先填写 Supabase URL 和 anon key");
     const res = await fetch(`${configuredUrl()}/rest/v1/${path}`, {
       ...options,
       headers: headers(options.headers || {})
@@ -95,33 +100,52 @@
     return body;
   }
 
-  function toDbUser(user) {
-    return {
-      id: user.id,
-      username: user.username,
-      password: user.password,
-      role: user.role || "",
-      role_key: user.roleKey || "hero",
-      is_admin: Boolean(user.isAdmin),
-      created_at: user.createdAt || new Date().toISOString(),
-      exp_override: user.expOverride == null ? null : Number(user.expOverride)
-    };
+  async function rpc(name, payload = {}) {
+    return api(`rpc/${name}`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
   }
 
-  function fromDbUser(row) {
+  function fromUser(row) {
+    if (!row) return null;
     return {
       id: row.id,
       username: row.username,
-      password: row.password,
+      password: row.password || "",
       role: row.role || "",
-      roleKey: row.role_key || "hero",
-      isAdmin: Boolean(row.is_admin),
-      createdAt: row.created_at,
-      expOverride: row.exp_override == null ? null : Number(row.exp_override)
+      roleKey: row.role_key || row.roleKey || "hero",
+      isAdmin: Boolean(row.is_admin ?? row.isAdmin),
+      createdAt: row.created_at || row.createdAt,
+      expOverride: row.exp_override == null ? null : Number(row.exp_override),
+      totalHours: Number(row.total_hours || row.totalHours || 0),
+      todayHours: Number(row.today_hours || row.todayHours || 0),
+      weekHours: Number(row.week_hours || row.weekHours || 0),
+      monthHours: Number(row.month_hours || row.monthHours || 0),
+      yearHours: Number(row.year_hours || row.yearHours || 0),
+      totalExp: Number(row.total_exp || row.totalExp || 0),
+      level: Number(row.level || 0),
+      title: row.title || ""
     };
   }
 
-  function toDbRecord(record) {
+  function fromRecord(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.user_id || row.userId,
+      date: row.date,
+      startTime: row.start_time || row.startTime,
+      endTime: row.end_time || row.endTime,
+      duration: Number(row.duration || 0),
+      type: row.type || "",
+      remark: row.remark || "",
+      createdAt: row.created_at || row.createdAt,
+      updatedAt: row.updated_at || row.updatedAt
+    };
+  }
+
+  function toRecord(record) {
     return {
       id: record.id,
       user_id: record.userId,
@@ -132,67 +156,49 @@
       type: record.type || "",
       remark: record.remark || "",
       created_at: record.createdAt || new Date().toISOString(),
-      updated_at: record.updatedAt || record.createdAt || new Date().toISOString()
-    };
-  }
-
-  function fromDbRecord(row) {
-    return {
-      id: row.id,
-      userId: row.user_id,
-      date: row.date,
-      startTime: row.start_time,
-      endTime: row.end_time,
-      duration: Number(row.duration || 0),
-      type: row.type || "",
-      remark: row.remark || "",
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updated_at: record.updatedAt || new Date().toISOString()
     };
   }
 
   function cacheLocal() {
     write(K.users, state.users);
     write(K.records, state.records);
+    if (state.currentUser) writeText(K.current, state.currentUser.id);
+  }
+
+  async function refreshLeaderboard(mode = "all") {
+    const rows = await rpc("app_leaderboard", { p_token: sessionToken(), p_mode: mode });
+    state.users = (rows || []).map(fromUser);
+    if (state.currentUser && !state.users.some((user) => user.id === state.currentUser.id)) {
+      state.users = [state.currentUser, ...state.users];
+    }
+    cacheLocal();
+    return state.users;
   }
 
   async function loadRemote() {
-    const [remoteUsers, remoteRecords] = await Promise.all([
-      api(`${tableUsers}?select=*&order=created_at.asc`),
-      api(`${tableRecords}?select=*&order=date.desc,start_time.desc`)
+    const token = sessionToken();
+    if (!token) {
+      state.currentUser = null;
+      state.users = [];
+      state.records = [];
+      cacheLocal();
+      return;
+    }
+    const [user, records] = await Promise.all([
+      rpc("app_current_user", { p_token: token }),
+      rpc("app_my_records", { p_token: token })
     ]);
-    state.users = (remoteUsers || []).map(fromDbUser);
-    state.records = (remoteRecords || []).map(fromDbRecord);
+    state.currentUser = fromUser(Array.isArray(user) ? user[0] : user);
+    state.records = (records || []).map(fromRecord);
+    await refreshLeaderboard("all");
     cacheLocal();
   }
 
-  async function uploadLocalIfRemoteEmpty(localUsers, localRecords) {
-    if (state.users.length || state.records.length) return;
-    const usersToUpload = (localUsers || []).filter((user) => user?.id && user?.username);
-    const recordsToUpload = (localRecords || []).filter((record) => record?.id && record?.userId);
-    if (!usersToUpload.length && !recordsToUpload.length) return;
-    if (usersToUpload.length) {
-      await api(`${tableUsers}?on_conflict=id`, {
-        method: "POST",
-        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-        body: JSON.stringify(usersToUpload.map(toDbUser))
-      });
-    }
-    if (recordsToUpload.length) {
-      await api(`${tableRecords}?on_conflict=id`, {
-        method: "POST",
-        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-        body: JSON.stringify(recordsToUpload.map(toDbRecord))
-      });
-    }
-    await loadRemote();
-  }
-
   async function init() {
-    const localUsers = read(K.users, []);
-    const localRecords = read(K.records, []);
-    state.users = localUsers;
-    state.records = localRecords;
+    state.users = read(K.users, []);
+    state.records = read(K.records, []);
+    state.currentUser = state.users.find((user) => user.id === readText(K.current)) || null;
     state.lastError = "";
 
     if (!configured()) {
@@ -202,8 +208,8 @@
     }
 
     try {
+      await rpc("app_ensure_admin", {});
       await loadRemote();
-      await uploadLocalIfRemoteEmpty(localUsers, localRecords);
       state.loaded = true;
     } catch (error) {
       state.lastError = error.message || "Supabase 数据同步失败";
@@ -211,29 +217,30 @@
     }
   }
 
-  async function upsertUser(user) {
-    const rows = await api(`${tableUsers}?on_conflict=id`, {
-      method: "POST",
-      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify(toDbUser(user))
-    });
-    return fromDbUser((rows || [])[0] || toDbUser(user));
+  async function login(username, password) {
+    const result = await rpc("app_login", { p_username: username, p_password: password });
+    if (!result?.session_token || !result?.user) throw new Error("账号或密码错误");
+    setSessionToken(result.session_token);
+    state.currentUser = fromUser(result.user);
+    writeText(K.current, state.currentUser.id);
+    await loadRemote();
+    return state.currentUser;
   }
 
-  async function upsertRecord(record) {
-    const rows = await api(`${tableRecords}?on_conflict=id`, {
-      method: "POST",
-      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify(toDbRecord(record))
+  async function register(user) {
+    const result = await rpc("app_register", {
+      p_id: user.id,
+      p_username: user.username,
+      p_password: user.password,
+      p_role: user.role || "",
+      p_role_key: user.roleKey || "hero"
     });
-    return fromDbRecord((rows || [])[0] || toDbRecord(record));
-  }
-
-  async function deleteRows(table, query) {
-    await api(`${table}?${query}`, {
-      method: "DELETE",
-      headers: { Prefer: "return=minimal" }
-    });
+    if (!result?.session_token || !result?.user) throw new Error("注册失败");
+    setSessionToken(result.session_token);
+    state.currentUser = fromUser(result.user);
+    writeText(K.current, state.currentUser.id);
+    await loadRemote();
+    return state.currentUser;
   }
 
   function users() {
@@ -241,22 +248,18 @@
   }
 
   async function saveUser(user) {
-    const saved = await upsertUser(user);
-    const next = state.users.filter((item) => item.id !== saved.id && item.username !== saved.username);
-    state.users = [...next, saved];
-    cacheLocal();
+    const saved = await rpc("app_save_user", { p_token: sessionToken(), p_user: user });
+    state.currentUser = state.currentUser?.id === saved.id ? fromUser(saved) : state.currentUser;
+    await loadRemote();
   }
 
   async function saveUsers(nextUsers) {
-    for (const user of nextUsers) {
-      await upsertUser(user);
-    }
+    for (const user of nextUsers) await saveUser(user);
     await loadRemote();
   }
 
   function currentUser() {
-    const currentId = readText(K.current);
-    return users().find((user) => user.id === currentId) || null;
+    return state.currentUser;
   }
 
   function setCurrentUser(userId) {
@@ -265,6 +268,11 @@
 
   function clearCurrentUser() {
     remove(K.current);
+    remove(K.session);
+    state.currentUser = null;
+    state.records = [];
+    state.users = [];
+    cacheLocal();
   }
 
   function allRecords() {
@@ -272,36 +280,42 @@
   }
 
   async function saveRecord(record) {
-    const saved = await upsertRecord(record);
-    state.records = [...state.records.filter((item) => item.id !== saved.id), saved];
+    const saved = await rpc("app_save_record", { p_token: sessionToken(), p_record: toRecord(record) });
+    const next = fromRecord(saved);
+    state.records = [...state.records.filter((item) => item.id !== next.id), next];
+    await refreshLeaderboard("all");
     cacheLocal();
   }
 
   async function saveRecords(nextRecords) {
-    for (const record of nextRecords) {
-      await upsertRecord(record);
-    }
+    for (const record of nextRecords) await saveRecord(record);
     await loadRemote();
   }
 
   async function deleteRecord(recordId) {
-    await deleteRows(tableRecords, `id=eq.${encodeURIComponent(recordId)}`);
+    await rpc("app_delete_record", { p_token: sessionToken(), p_record_id: recordId });
     state.records = state.records.filter((item) => item.id !== recordId);
+    await refreshLeaderboard("all");
     cacheLocal();
   }
 
   async function deleteUser(userId) {
-    await deleteRows(tableRecords, `user_id=eq.${encodeURIComponent(userId)}`);
-    await deleteRows(tableUsers, `id=eq.${encodeURIComponent(userId)}`);
+    await rpc("app_delete_user", { p_token: sessionToken(), p_user_id: userId });
     state.users = state.users.filter((item) => item.id !== userId);
     state.records = state.records.filter((record) => record.userId !== userId);
     cacheLocal();
   }
 
   async function clearRecordsForUser(userId) {
-    await deleteRows(tableRecords, `user_id=eq.${encodeURIComponent(userId)}`);
-    state.records = state.records.filter((record) => record.userId !== userId);
+    await rpc("app_clear_records", { p_token: sessionToken(), p_user_id: userId });
+    if (state.currentUser?.id === userId) state.records = [];
+    await refreshLeaderboard("all");
     cacheLocal();
+  }
+
+  async function leaderboardRows(mode) {
+    const rows = await rpc("app_leaderboard", { p_token: sessionToken(), p_mode: mode });
+    return (rows || []).map(fromUser);
   }
 
   function recordsForCurrentUser() {
@@ -327,8 +341,6 @@
 
   window.OvertimeStore = {
     K,
-    tableUsers,
-    tableRecords,
     read,
     write,
     readText,
@@ -338,10 +350,12 @@
     setSupabaseUrl,
     supabaseAnonKey,
     setSupabaseAnonKey,
-    githubToken: supabaseAnonKey,
-    setGithubToken: setSupabaseAnonKey,
+    sessionToken,
     configured,
     init,
+    login,
+    register,
+    leaderboardRows,
     lastError: () => state.lastError,
     users,
     saveUser,
