@@ -27,8 +27,7 @@ body{background:#02060c}.app{background:#030c18;background-image:radial-gradient
 <div class="confirm-mask" id="confirmMask"><section class="confirm-box"><h2 id="confirmTitle">确认删除？</h2><p id="confirmMessage">删除后无法恢复。</p><div class="confirm-actions"><button class="btn gray" onclick="closeConfirm()">取消</button><button class="btn red" onclick="confirmYes()">确认</button></div></section></div>
 <div class="export-mask" id="exportMask"><section class="export-box"><button class="pixel-close" onclick="closeExport()" aria-label="关闭导出">×</button><h2>导出数据</h2><div class="export-scope"><div class="export-scope-row"><button id="exportScope_week" onclick="setExportScope('week')">本周</button><button id="exportScope_month" onclick="setExportScope('month')">月份</button></div><div class="export-filters"><label>月份<input id="exportMonth" type="month" onchange="refreshExportPreview()"></label></div></div><textarea id="exportText" readonly></textarea><div class="export-actions"><button class="btn" onclick="copyExportText()">复制</button><button class="btn green" onclick="downloadExportMarkdown()">下载</button></div></section></div>
 <div class="toast" id="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="supabase-config.js"></script>
+<script src="app-config.js"></script>
 <script src="app-data.js"></script>
 <script src="app.js"></script>
 </body>
