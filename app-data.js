@@ -287,10 +287,19 @@
   }
 
   async function deleteUser(userId) {
-    await api("deleteUser", { token: sessionToken(), userId });
+    const previousUsers = state.users;
+    const previousRecords = state.records;
     state.users = state.users.filter((item) => item.id !== userId);
     state.records = state.records.filter((record) => record.userId !== userId);
     cacheLocal();
+    try {
+      await api("deleteUser", { token: sessionToken(), userId });
+    } catch (error) {
+      state.users = previousUsers;
+      state.records = previousRecords;
+      cacheLocal();
+      throw error;
+    }
   }
 
   async function clearRecordsForUser(userId) {
