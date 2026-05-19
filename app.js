@@ -32,7 +32,7 @@ else if(key==='elf'){p.push(R(13,31,14,8,skin),R(61,31,14,8,skin),R(22,20,44,12,
 else if(key==='knight'){p.push(R(22,17,44,11,'#cbd4df'),R(18,28,52,17,'#9ba8ba'),R(24,29,40,9,'#e7edf4'));face(30,38,28,18);p.push(R(34,43,5,4,black),R(50,43,5,4,black),R(39,52,10,3,line),R(23,56,42,26,'#497ccf'),R(16,53,13,24,'#b7c2d0'),R(62,53,13,24,'#b7c2d0'),R(32,58,24,7,'#d9e4f0'),R(38,62,12,12,'#f2c94c'))}
 else{p.push(R(21,19,46,12,hair));face(28,28,32,29);torso(25,58,38,24,cloth);p.push(R(30,50,28,16,'#d17a36'),R(16,55,11,21,'#4b74a9'),R(62,55,11,21,'#4b74a9'),R(60,41,16,5,'#7a4b20'),R(70,35,5,13,'#bfc7d5'))}
 return `<svg class="pixel-sprite" viewBox="0 0 88 88" shape-rendering="crispEdges">${p.join('')}</svg>`}
-async function ensureAdminAccount(){try{await store.init()}catch{}}
+async function ensureAdminAccount(){}
 function showToast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>t.classList.remove('show'),1400)}
 function askConfirm(t,m,fn){$('confirmTitle').textContent=t;$('confirmMessage').textContent=m;confirmAction=fn;$('confirmMask').classList.add('show')}function closeConfirm(){confirmAction=null;$('confirmMask').classList.remove('show')}function confirmYes(){const fn=confirmAction;closeConfirm();if(typeof fn==='function')fn()}
 async function boot(){renderLoading();await store.init();await ensureAdminAccount();renderTypeGrid();if(currentUser())page='home';render();$('fStart').addEventListener('input',updateDurationPreview);$('fEnd').addEventListener('input',updateDurationPreview);document.querySelectorAll('#nav button').forEach(b=>b.addEventListener('click',()=>{page=b.dataset.page;render()}))}

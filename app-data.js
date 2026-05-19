@@ -134,8 +134,10 @@
     if (!result?.sessionToken || !result?.user) throw new Error("注册失败");
     setSessionToken(result.sessionToken);
     state.currentUser = result.user;
+    state.records = [];
+    state.users = [result.user, ...state.users.filter((item) => item.id !== result.user.id)];
     writeText(K.current, state.currentUser.id);
-    await loadRemote();
+    cacheLocal();
     return state.currentUser;
   }
 
@@ -178,7 +180,6 @@
   async function saveRecord(record) {
     const saved = await api("saveRecord", { token: sessionToken(), record });
     state.records = [...state.records.filter((item) => item.id !== record.id && item.id !== saved.id), saved];
-    await refreshLeaderboard("all");
     cacheLocal();
   }
 

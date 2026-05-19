@@ -284,6 +284,24 @@ async function allData() {
   return { users: addTotals(users, records), records };
 }
 
+async function allUsers() {
+  const rows = await listRecords(env("FEISHU_USERS_TABLE_ID"));
+  return rows.map(userFromRecord).filter((user) => user.username && user.active);
+}
+
+async function allRecords() {
+  const rows = await listRecords(env("FEISHU_RECORDS_TABLE_ID"));
+  return rows.map(recordFromBitable).filter((record) => record.userId);
+}
+
+async function requireUserOnly(token) {
+  const username = readSession(token);
+  const users = await allUsers();
+  const user = users.find((item) => item.username === username);
+  if (!user) throw new Error("账号不存在或已停用");
+  return user;
+}
+
 async function requireUser(token) {
   const username = readSession(token);
   const data = await allData();
@@ -320,7 +338,7 @@ async function handle(action, body) {
     const username = String(user.username || "").trim();
     const password = String(user.password || "");
     if (!username || !password) throw new Error("请输入用户名和密码");
-    const existing = (await allData()).users.find((item) => item.username === username);
+    const existing = (await allUsers()).find((item) => item.username === username);
     if (existing) throw new Error("用户名已存在");
     const created = await createRecord(env("FEISHU_USERS_TABLE_ID"), {
       username,
@@ -362,11 +380,14 @@ async function handle(action, body) {
   }
 
   if (action === "saveRecord") {
-    const { user: actor, records } = await requireUser(body.token);
+    const actor = await requireUserOnly(body.token);
     const record = body.record || {};
+    const isExistingRecord = record.id && !String(record.id).startsWith("rec_");
+    const records = isExistingRecord ? await allRecords() : [];
+    const existing = records.find((item) => item.id === record.id);
+    if (existing && !actor.isAdmin && existing.userId !== actor.id) throw new Error("没有权限修改这条记录");
     const username = actor.isAdmin && record.userId ? record.userId : actor.username;
     const fields = feishuRecordFields(record, username);
-    const existing = records.find((item) => item.id === record.id);
     const saved = existing
       ? await updateRecord(env("FEISHU_RECORDS_TABLE_ID"), existing.id, fields)
       : await createRecord(env("FEISHU_RECORDS_TABLE_ID"), fields);
