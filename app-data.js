@@ -76,6 +76,52 @@
     if (state.currentUser) writeText(K.current, state.currentUser.id);
   }
 
+  function chinaDate(date = new Date()) {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(date);
+  }
+
+  function sameWeek(dateText, base = new Date()) {
+    const date = new Date(dateText);
+    const start = new Date(base);
+    const day = start.getDay() || 7;
+    start.setDate(start.getDate() - day + 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return date >= start && date < end;
+  }
+
+  function sum(records) {
+    return Math.round(records.reduce((total, record) => total + Number(record.duration || 0), 0) * 100) / 100;
+  }
+
+  function updateCurrentUserTotals() {
+    const user = state.currentUser;
+    if (!user) return;
+    const now = new Date();
+    const own = state.records.filter((record) => record.userId === user.id);
+    const totalHours = sum(own);
+    const next = {
+      ...user,
+      totalHours,
+      todayHours: sum(own.filter((record) => record.date === chinaDate(now))),
+      weekHours: sum(own.filter((record) => sameWeek(record.date, now))),
+      monthHours: sum(own.filter((record) => {
+        const date = new Date(record.date);
+        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+      })),
+      yearHours: sum(own.filter((record) => new Date(record.date).getFullYear() === now.getFullYear())),
+      totalExp: Math.round(totalHours * 10)
+    };
+    state.currentUser = next;
+    state.users = [next, ...state.users.filter((item) => item.id !== next.id)];
+  }
+
   async function refreshLeaderboard(mode = "all") {
     const rows = await api("leaderboard", { token: sessionToken(), mode });
     state.users = rows || [];
@@ -110,7 +156,6 @@
     state.lastError = "";
 
     try {
-      await api("ensureAdmin", {});
       await loadRemote();
       state.loaded = true;
     } catch (error) {
@@ -124,8 +169,10 @@
     if (!result?.sessionToken || !result?.user) throw new Error("账号或密码错误");
     setSessionToken(result.sessionToken);
     state.currentUser = result.user;
+    state.records = result.records || [];
+    state.users = result.users || [result.user];
     writeText(K.current, state.currentUser.id);
-    await loadRemote();
+    cacheLocal();
     return state.currentUser;
   }
 
@@ -178,9 +225,22 @@
   }
 
   async function saveRecord(record) {
-    const saved = await api("saveRecord", { token: sessionToken(), record });
-    state.records = [...state.records.filter((item) => item.id !== record.id && item.id !== saved.id), saved];
+    const previous = state.records;
+    state.records = [...state.records.filter((item) => item.id !== record.id), record];
+    updateCurrentUserTotals();
     cacheLocal();
+    try {
+      const saved = await api("saveRecord", { token: sessionToken(), record });
+      state.records = [...state.records.filter((item) => item.id !== record.id && item.id !== saved.id), saved];
+      updateCurrentUserTotals();
+      cacheLocal();
+      return saved;
+    } catch (error) {
+      state.records = previous;
+      updateCurrentUserTotals();
+      cacheLocal();
+      throw error;
+    }
   }
 
   async function saveRecords(nextRecords) {
@@ -210,6 +270,7 @@
   }
 
   async function leaderboardRows(mode) {
+    if (state.users.length) return state.users;
     return api("leaderboard", { token: sessionToken(), mode });
   }
 
@@ -247,6 +308,7 @@
     login,
     register,
     leaderboardRows,
+    refreshLeaderboard,
     lastError: () => state.lastError,
     users,
     saveUser,

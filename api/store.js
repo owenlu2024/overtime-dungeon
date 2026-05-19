@@ -85,12 +85,42 @@ async function createRecord(tableId, fields) {
   return data.record;
 }
 
+async function createRecordWithOptionalFields(tableId, fields, optionalFieldNames) {
+  if (process.env.FEISHU_SAVE_ROLE_FIELDS !== "1") {
+    const requiredFields = { ...fields };
+    optionalFieldNames.forEach((name) => delete requiredFields[name]);
+    return createRecord(tableId, requiredFields);
+  }
+  try {
+    return await createRecord(tableId, fields);
+  } catch (error) {
+    const requiredFields = { ...fields };
+    optionalFieldNames.forEach((name) => delete requiredFields[name]);
+    return createRecord(tableId, requiredFields);
+  }
+}
+
 async function updateRecord(tableId, recordId, fields) {
   const data = await feishu(bitablePath(tableId, `/${recordId}`), {
     method: "PUT",
     body: JSON.stringify({ fields })
   });
   return data.record;
+}
+
+async function updateRecordWithOptionalFields(tableId, recordId, fields, optionalFieldNames) {
+  if (process.env.FEISHU_SAVE_ROLE_FIELDS !== "1") {
+    const requiredFields = { ...fields };
+    optionalFieldNames.forEach((name) => delete requiredFields[name]);
+    return updateRecord(tableId, recordId, requiredFields);
+  }
+  try {
+    return await updateRecord(tableId, recordId, fields);
+  } catch (error) {
+    const requiredFields = { ...fields };
+    optionalFieldNames.forEach((name) => delete requiredFields[name]);
+    return updateRecord(tableId, recordId, requiredFields);
+  }
 }
 
 async function deleteRecordFromTable(tableId, recordId) {
@@ -123,20 +153,22 @@ function toFeishuDate(value) {
   return new Date(`${value}T00:00:00+08:00`).getTime();
 }
 
-function userFromRecord(record) {
+function userFromRecord(record, fallback = {}) {
   const fields = record.fields || {};
   const username = fieldText(fields.username || fields.users).trim();
   const roleValue = fieldText(fields.role).trim();
   const isAdmin = roleValue === "admin";
   const active = fields.active == null ? true : fieldBool(fields.active);
+  const roleName = fieldText(fields.roleName || fields.role_name || fields.profession || fields.job).trim();
+  const roleKey = fieldText(fields.roleKey || fields.role_key || fields.avatar || fields.avatarKey).trim();
 
   return {
     id: username,
     recordId: record.record_id,
     username,
     password: fieldText(fields.password),
-    role: isAdmin ? "admin" : "勇者",
-    roleKey: "hero",
+    role: isAdmin ? "admin" : roleName || fallback.role || "勇者",
+    roleKey: isAdmin ? "hero" : roleKey || fallback.roleKey || "hero",
     isAdmin,
     active,
     createdAt: "",
@@ -327,26 +359,35 @@ async function handle(action, body) {
   if (action === "login") {
     const username = String(body.username || "").trim();
     const password = String(body.password || "");
-    const { users } = await allData();
+    const { users, records } = await allData();
     const user = users.find((item) => item.username === username && item.password === password && item.active);
     if (!user) throw new Error("账号或密码错误");
-    return { sessionToken: signSession(user.username), user };
+    return {
+      sessionToken: signSession(user.username),
+      user,
+      users,
+      records: user.isAdmin ? records : records.filter((record) => record.userId === user.id)
+    };
   }
 
   if (action === "register") {
     const user = body.user || {};
     const username = String(user.username || "").trim();
     const password = String(user.password || "");
+    const roleName = String(user.role || "勇者").trim() || "勇者";
+    const roleKey = String(user.roleKey || "hero").trim() || "hero";
     if (!username || !password) throw new Error("请输入用户名和密码");
     const existing = (await allUsers()).find((item) => item.username === username);
     if (existing) throw new Error("用户名已存在");
-    const created = await createRecord(env("FEISHU_USERS_TABLE_ID"), {
+    const created = await createRecordWithOptionalFields(env("FEISHU_USERS_TABLE_ID"), {
       username,
       password,
       role: "user",
+      roleName,
+      roleKey,
       active: true
-    });
-    const saved = userFromRecord(created);
+    }, ["roleName", "roleKey"]);
+    const saved = userFromRecord(created, { role: roleName, roleKey });
     return { sessionToken: signSession(username), user: saved };
   }
 
@@ -370,13 +411,15 @@ async function handle(action, body) {
     const next = body.user || {};
     const target = users.find((item) => item.id === next.id || item.username === next.username);
     if (!target) throw new Error("没有找到用户");
-    const saved = await updateRecord(env("FEISHU_USERS_TABLE_ID"), target.recordId, {
+    const saved = await updateRecordWithOptionalFields(env("FEISHU_USERS_TABLE_ID"), target.recordId, {
       username: target.username,
       password: next.password || target.password,
       role: target.isAdmin ? "admin" : "user",
+      roleName: next.role || target.role || "勇者",
+      roleKey: next.roleKey || target.roleKey || "hero",
       active: true
-    });
-    return userFromRecord(saved);
+    }, ["roleName", "roleKey"]);
+    return userFromRecord(saved, { role: next.role || target.role, roleKey: next.roleKey || target.roleKey });
   }
 
   if (action === "saveRecord") {
